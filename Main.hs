@@ -3,86 +3,66 @@
 module Main where
 
 import FRP.Yampa
-import FRP.Yampa.Vector3
-import FRP.Yampa.Utilities
-import FRP.Yampa.Switches 
-import Data.IORef
-import Graphics.UI.GLUT hiding (Level,Vector3(..),normalize)
-import qualified Graphics.UI.GLUT as G(Vector3(..))
+import FRP.Yampa.Switches
 import Control.Lens
+import Graphics.Gloss
+import Graphics.Gloss.Interface.FRP.Yampa
 
 import Types
 import Graphics
 
-initBall :: [Ball]
-initBall = [singleBall, secondBall, thirdBall]
-  where singleBall = Ball { _pos = P2D 0.0 0.0, _vel = P2D (-14.0) 12.0 }
-        secondBall = Ball { _pos = P2D 0.0 0.0, _vel = P2D 12.0 14.0 }
-        thirdBall  = Ball { _pos = P2D 1.0 2.0, _vel = P2D (-12.0) (-14.0) }
-        
-leftWall = (-9)
-rightWall = 9
-topWall = 8
-bottomWall = (-8)
+initWorld  = World {
+  _level   = [singleBall, secondBall, thirdBall, fourthBall],
+  _borders = [Wall 200.0 H,  Wall (-200.0) H, Wall (-300.0) V, Wall 300.0 V],
+  _walls   = [] }
+  where singleBall = Ball { _pos = (0.0, 60.0) , _vel = (-1.0*modulo,  1.5*modulo) }
+        secondBall = Ball { _pos = (50.0, 0.0) , _vel = ( 1.0*modulo,  1.5*modulo) }
+        thirdBall  = Ball { _pos = (30.0, 20.0), _vel = (-1.0*modulo, -1.5*modulo) }
+        fourthBall = Ball { _pos = (0.0, 20.0) , _vel = ( 1.5*modulo, -1.0*modulo) }
+        modulo     = 150.0
 
-outsideBoundaries :: Ball -> [Bool]
-outsideBoundaries b = [p^.x <= leftWall, p^.x >= rightWall, p^.y >= topWall, p^.y <= bottomWall]
-  where p = b^.pos
+mainSF = bouncingOffWalls initWorld >>^ draw 
 
-bounceBalls :: [Ball] -> [Ball]
-bounceBalls bs = map bounceBall bs
-
-bounceBall :: Ball -> Ball
-bounceBall b = foldr applyRot b $ map fst $ filter ((==True).snd) (zip handlers (outsideBoundaries b))
-  where handlers = [hitVWall, hitVWall, hitHWall, hitHWall]
-
-
-hitVWall, hitHWall :: Rotation
-hitVWall = Rot $ over (vel.x) (*(-1))
-hitHWall = Rot $ over (vel.y) (*(-1))
-
-move :: [Ball] -> SF () [Ball]
-move bs = proc () -> do
+main :: IO ()
+main = do
+  playYampa
+    (InWindow "Walls" (600,400) (200,200))
+    (greyN 0.8)
+    3000
+    mainSF
+       
+move :: [Ball] -> SF a [Ball]
+move bs = proc input -> do
   nxs <- (zipWith (+) pxs) ^<< parZ (repeat integral) -< vxs
   nys <- (zipWith (+) pys) ^<< parZ (repeat integral) -< vys
   returnA -< constructBalls nxs nys vxs vys
-  where vxs = map (\b -> b^.vel^.x) bs
-        vys = map (\b -> b^.vel^.y) bs
-        pxs = map (\b -> b^.pos^.x) bs
-        pys = map (\b -> b^.pos^.y) bs
-        constructBalls px py vx vy = zipWith Ball (zipWith P2D px py) (zipWith P2D vx vy)
-       
-bouncingOffWalls :: [Ball] -> SF () [Ball]
-bouncingOffWalls bs =
-  switch (move' bs) bouncingOffWalls
-  where move' bs' = proc () -> do
-          nbs <- move bs' -< ()
-          ev <- edge -< or $ map (or . outsideBoundaries) nbs
-          returnA -< (nbs, ev `tag` bounceBalls nbs)
-          
+  where vxs = map (\b -> b^.vel^._1) bs
+        vys = map (\b -> b^.vel^._2) bs
+        pxs = map (\b -> b^.pos^._1) bs
+        pys = map (\b -> b^.pos^._2) bs
+        constructBalls px py vx vy = zipWith Ball (zipWith (,) px py) (zipWith (,) vx vy)
 
-mainSF = bouncingOffWalls initBall >>^ (\ bs -> draw (map (\b->b^.pos) bs))
+bouncingOffWalls :: World -> SF a World
+bouncingOffWalls w =
+  switch (move' w) bouncingOffWalls
+  where move' :: World -> SF a (World, Event World)
+        move' w@(World bs bords ws) = proc input -> do
+          nbs <- move bs -< input
+          ev <- edge -< or $ map (or . outsideBoundaries bords) nbs
+          let nw = set level nbs w
+          returnA -< (nw, ev `tag` bounceBalls nw)
 
--- | Main, initializes Yampa and sets up reactimation loop
-main :: IO ()
-main = do
-    oldTime <- newIORef (0 :: Int)
-    rh <- reactInit initGL (\_ _ b -> b >> return False) mainSF
-    displayCallback $= return ()
-    idleCallback $= Just (idle oldTime rh)
-    oldTime' <- get elapsedTime
-    writeIORef oldTime oldTime' 
-    mainLoop
+outsideBoundaries :: [Wall] -> Ball -> [Bool]
+outsideBoundaries [t, b, l, r] ball = [y >= coord t, y <= coord b, x <= coord l, x >= coord r]
+  where (x, y) = ball^.pos
 
--- | Reactimation iteration, supplying the input
-idle :: IORef Int -> 
-        ReactHandle () (IO ()) -> IO ()
-idle oldTime rh = do
-    newTime'  <- get elapsedTime
-    oldTime'  <- get oldTime
-    let dt = (fromIntegral $ newTime' - oldTime')/1000
-    react rh (dt, Nothing ) 
-    writeIORef oldTime newTime'
-    return ()
+bounceBalls :: World -> World
+bounceBalls w = over level (map (bounceBall (w^.borders))) w
+  where
+    bounceBall :: [Wall] -> Ball -> Ball
+    bounceBall bords b = foldr applyRot b $ map fst $ filter ((==True).snd) (zip handlers (outsideBoundaries bords b))
+    handlers = [hitHWall, hitHWall, hitVWall, hitVWall]
+    hitVWall = Rot $ over (vel._1) (*(-1))
+    hitHWall = Rot $ over (vel._2) (*(-1))
 
 
