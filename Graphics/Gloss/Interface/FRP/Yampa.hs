@@ -1,4 +1,4 @@
-module Graphics.Gloss.Interface.FRP.Yampa (playYampa, InputEvent) where
+module Graphics.Gloss.Interface.FRP.Yampa (playYampa) where
 
 import Control.Monad (when)
 import Data.IORef (newIORef, writeIORef, readIORef)
